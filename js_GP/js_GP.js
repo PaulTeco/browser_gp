@@ -1,90 +1,104 @@
-
-
-// TODO: buttons to change: length scale, sigma, choice of kernel (generally parameters per slider), randomize points, initialize with x points
-// even: multiply and add kernels in 2D UI, add vertical, multiply horizontally
-// also bind to table? --> angular?
-
-
 // GP class
 class GaussianProcessRegression{
-    constructor(variance_point=0){
-        this.variance_point = variance_point
+    constructor(length_scale=1, prior_variance=1, data_noise=0){
+        this._length_scale = length_scale
+        this._sigma_prior_squared = prior_variance
+        this._sigma_noise_squared = data_noise
 
         this.dataset_prediction = []
         this.dataset_sigma_low = []
         this.dataset_sigma_high = []
+        this.prior_mean = undefined
+        this.prior_mean_function = undefined
 
-        this.x_axis = []
+        this._prior = []
+        this._prior_add_variance = []
+        this._prior_sub_variance = []
     }
 
-
-    RBF = function(xi, xj, length_scale, variance){
-        return variance * Math.exp(-((xi-xj)**2)/(2 * length_scale**2))
+    _k_RBF = function(xi, xj){
+        let noise = xi==xj ? this._sigma_noise_squared : 0
+        return (this._sigma_prior_squared - this._sigma_noise_squared) * Math.exp(-((xi-xj)**2)/(2 * this._length_scale**2)) + noise
     }
 
-    // use this function to choose, add and multiply kernel functions. Not implemented yet. 
-    set_kernel = function(RBF_length, RBF_variance){
-        this.kernel = function(xi, xj){
-            return this.RBF(xi, xj, RBF_length, RBF_variance)
-        }
-    }
+    set_prior_mean = function(func, X_t){
+        this.prior_mean_function = func
 
+        this.prior_mean = func(X_t)
+
+        this._prior = this.prior_mean.map((el, idx) => {return {x: X_t[idx], y: el}})
+        this._prior_add_variance = this.prior_mean.map((el, idx) => {return {x: X_t[idx], y: el+this._sigma_prior_squared}})
+        this._prior_sub_variance = this.prior_mean.map((el, idx) => {return {x: X_t[idx], y: el-this._sigma_prior_squared}})
+    }
 
     // math.js matrix functions: https://mathjs.org/docs/reference/functions.html#matrix-functions
-    // predicts a single mu_t, variance_t for a given x_t
-    _train_and_predict = function(X, Y, x_t){
+    // predicts arrays mu_t, variance_t for given array X_t
+    predict = function(X, Y, X_t){
 
-        // computes the covariance matrix for a single x_t with all datapoints X
-        var X_new = [...X, x_t]  // add single item to array in copy
+        // computes the covariance matrix for m prediction points X_t from n datapoints X
+        var X_new = [...X, ...X_t]
+
+        const n = X.length
+        const m = X_t.length
+
         var covariance_matrix = []
 
-        for (let i=0; i<X_new.length; i++){
+        for (let i=0; i<n+m; i++){
             covariance_matrix[i]=[]
-            for (let j=0; j<X_new.length; j++){
-                covariance_matrix[i][j] = this.kernel(X_new[i],X_new[j])
+            for (let j=0; j<n+m; j++){
+                covariance_matrix[i][j] = this._k_RBF(X_new[i],X_new[j])
             }
         }
 
-        if (X.length>0){
-            // with Sigma being a n+1 x n+1 matrix
+        // set prior to constant 0 if nothing was specified
+        if (this.prior_mean === undefined){
+            this.set_prior_mean((arr) => {return arr.map((el) => {return 0})}, X_t)
+        }
+
+        var mu_t = []
+        var variance_t = []
+
+        if (n>0){
+            // with Sigma being a n+m x n+m matrix
             // and Y being a n vector of labels
-            var K = math.transpose(math.transpose(covariance_matrix.slice(0,-1)).slice(0,-1))  // original size nxn matrix
-            var Kstar = covariance_matrix[covariance_matrix.length-1].slice(0,-1)  // size n vector
-            var KstarT = math.transpose(Kstar)
-            var Kstarstar = covariance_matrix[covariance_matrix.length-1][covariance_matrix.length-1]  // number
+            const K = covariance_matrix.slice(0,n).map(row => row.slice(0,n));  // nxn matrix
+            const Kstar = covariance_matrix.slice(0,n).map(row => row.slice(n,n+m));  // nxm matrix
+            const KstarT = covariance_matrix.slice(n,n+m).map(row => row.slice(0,n));  // mxn matrix
+            const Kstarstar = covariance_matrix.slice(n,n+m).map(row => row.slice(n,n+m));  // mxm matrix
 
-            var Kinv = math.inv(K)  // nxn matrix
-            var mu_t = math.multiply(math.multiply(KstarT,Kinv),Y)
+            const Kinv = math.inv(K)  // nxn matrix
 
-            // self variance of measurement points is added here
-            var variance_t = Kstarstar - math.multiply(math.multiply(KstarT,Kinv),Kstar) + this.variance_point
+            // subtract prior from support points
+            const prior_at_X = this.prior_mean_function(X)
+            const Y_prior = prior_at_X.map((el, idx) => {return (Y[idx] - el)})  
+
+            const KstarTKinvY = math.multiply(math.multiply(KstarT,Kinv),Y_prior)
+            const KstarTKinvKstar = math.multiply(math.multiply(KstarT,Kinv),Kstar)
+
+            for (let i=0; i<m; i++){
+                mu_t[i] = KstarTKinvY[i] + this.prior_mean[i]
+                variance_t[i] = Kstarstar[i][i] - KstarTKinvKstar[i][i]
+            }
+            
 
         } else {
-            var mu_t = 0
-            var variance_t = covariance_matrix[0][0] + this.variance_point // get prior dynamically from the input data
+
+            for (let i=0; i<m; i++){
+                mu_t[i] = this.prior_mean[i]
+                variance_t[i] = covariance_matrix[i][i]
+            }
+    
         }
-
-            this.dataset_prediction.push({x: x_t, y: mu_t})
-            this.dataset_sigma_low.push({x: x_t, y: mu_t-variance_t})
-            this.dataset_sigma_high.push({x: x_t, y: mu_t+variance_t})
-    }
-
-    generate_x_axis = function(start, end, steps){
-        this.x_axis = []
-        for (let i=0; i<steps; i++){
-            this.x_axis.push(start + i * (end-start)/(steps-1))
-        }
-    }
-
-    train_gp = function(X, Y){
         this.dataset_prediction = []
         this.dataset_sigma_low = []
         this.dataset_sigma_high = []
 
-        for (let i=0; i<this.x_axis.length; i++){
-            this._train_and_predict(X, Y, this.x_axis[i])
-
+        for (let i=0; i<m; i++){
+            this.dataset_prediction.push({x: X_t[i], y: mu_t[i]})
+            this.dataset_sigma_low.push({x: X_t[i], y: mu_t[i] - variance_t[i]})
+            this.dataset_sigma_high.push({x: X_t[i], y: mu_t[i] + variance_t[i]})
         }
+
     }
 
 }
@@ -96,10 +110,8 @@ class RandomDataPoints{
     constructor(){
         this.X = []
         this.Y = []
-        this.XY = []
 
         for (let i=0; i<10; i++){
-    
             if(i==0){
                 this.X[i] = 0.2
                 this.Y[i] = this.normal_random(10,2)
@@ -107,8 +119,6 @@ class RandomDataPoints{
                 this.X[i] = this.normal_random(i,0.2)
                 this.Y[i] = this.Y[i-1] + this.normal_random(2,5) + 2
             }
-        
-            this.XY[i] = {x: this.X[i], y: this.Y[i], r:10}
         }
     }
 
@@ -126,11 +136,9 @@ class RandomDataPoints{
         return rand;
     }
     
-    update_XY = function(){
-        this.XY = []
-        for (let i=0; i<this.X.length; i++){
-            this.XY[i] = {x: this.X[i], y: this.Y[i], r:10}
-        }
+    // getter for X and Y in one array in chartjs data form
+    get XY(){
+        return this.X.map((val, idx) => {return {x: val, y: this.Y[idx], r: 10}})
     }
 }
 
@@ -140,24 +148,23 @@ class RandomDataPoints{
 
 // actual code start
 
+function generate_x_axis(start, end, steps){
+    var x_axis = []
+    for (let i=0; i<steps; i++){
+        x_axis.push(start + i * (end-start)/(steps-1))
+    }
+    return x_axis
+}
+
+
 var datapoints = new RandomDataPoints()
 
-var _length_scale = 0.8
-var _sigma_pred_squared = 9
-var _sigma_self_squared = 1
-
-var _sigma_squared = _sigma_pred_squared - _sigma_self_squared
-
-var gp = new GaussianProcessRegression(variance_point=1)
-gp.set_kernel(RBF_length=_length_scale, RBF_variance=_sigma_squared)
 var _buffer = 0.25*(Math.max(...datapoints.X)-Math.min(...datapoints.X))
-gp.generate_x_axis(Math.min(...datapoints.X)-_buffer,Math.max(...datapoints.X)+_buffer,100)
-gp.train_gp(datapoints.X, datapoints.Y)
+var xaxis = generate_x_axis(Math.min(...datapoints.X)-_buffer,Math.max(...datapoints.X)+_buffer,100)
 
-
-
-
-
+var gp = new GaussianProcessRegression(length_scale=0.8, prior_variance=9, data_noise=0)
+// gp.set_prior_mean((arr) => {return arr.map((el) => {return el*5})}, xaxis)  // set a custom prior through a function
+gp.predict(datapoints.X, datapoints.Y, xaxis)
 
 const ctx = document.getElementById('pureJSChart').getContext('2d');
 
@@ -165,17 +172,9 @@ const ctx = document.getElementById('pureJSChart').getContext('2d');
 const chart_data = {
     datasets: [{
         type: 'bubble',
-        label: 'Test Dataset',
+        label: 'Dataset',
         data: datapoints.XY,
         backgroundColor: 'rgb(99, 255, 132)'
-    },{
-        type: 'line',
-        label: 'GP Upper Variance',
-        fill: '+1',
-        data: gp.dataset_sigma_high,
-        backgroundColor: 'rgba(132, 99, 255, 0.2)',
-        pointRadius: 0,
-        pointHitRadius: 5
     },{
         type: 'line',
         label: 'GP Prediction',
@@ -183,10 +182,39 @@ const chart_data = {
         backgroundColor: 'rgba(132, 99, 255, 1)'
     },{
         type: 'line',
-        label: 'GP Lower Variance',
+        label: 'GP Variance',
+        fill: '+1',
+        data: gp.dataset_sigma_high,
+        backgroundColor: 'rgba(132, 99, 255, 0.2)',
+        pointRadius: 0,
+        pointHitRadius: 5
+    },{
+        type: 'line',
+        label: 'GP Variance',
         fill: "-1",
         data: gp.dataset_sigma_low,
         backgroundColor: 'rgba(132, 99, 255, 0.2)',
+        pointRadius: 0,
+        pointHitRadius: 5
+    },{
+        type: 'line',
+        label: 'Prior',
+        data: gp._prior,
+        backgroundColor: 'rgba(32, 99, 255, 0.3)'
+    },{
+        type: 'line',
+        label: 'Prior Variance',
+        fill: '+1',
+        data: gp._prior_add_variance,
+        backgroundColor: 'rgba(32, 99, 255, 0.1)',
+        pointRadius: 0,
+        pointHitRadius: 5
+    },{
+        type: 'line',
+        label: 'Prior Variance',
+        fill: "-1",
+        data: gp._prior_sub_variance,
+        backgroundColor: 'rgba(32, 99, 255, 0.1)',
         pointRadius: 0,
         pointHitRadius: 5
     }]
@@ -195,6 +223,14 @@ const chart_data = {
 const pureJSChart = new Chart(ctx, {
     data: chart_data,
     options: {
+        plugins: {
+            legend: {
+                onClick: newLegendClickHandler,
+                labels: {
+                    filter: newLegendFilterHandler, 
+                }
+            }
+        },
         scales: {
             y: {
                 suggestedMax: 50,
@@ -212,7 +248,39 @@ const pureJSChart = new Chart(ctx, {
     }
 });
 
+// Click Handler from https://www.chartjs.org/docs/3.6.2/configuration/legend.html#legend-item-interface
+function newLegendClickHandler(e, legendItem, legend) {
 
+    const index = legendItem.datasetIndex;
+
+    // prediction variance
+    if (index == 2 | index == 3) {
+        let ci = legend.chart;
+        [ci.getDatasetMeta(2), ci.getDatasetMeta(3)].forEach(function(meta) {
+            meta.hidden = meta.hidden === null ? !ci.data.datasets[index].hidden : null;
+        });
+        ci.update();
+    } else if (index == 4 | index == 5 | index == 6){
+        let ci = legend.chart;
+        [ci.getDatasetMeta(4), ci.getDatasetMeta(5), ci.getDatasetMeta(6)].forEach(function(meta) {
+            meta.hidden = meta.hidden === null ? !ci.data.datasets[index].hidden : null;
+        });
+        ci.update();
+    } else {
+        // Do the original logic
+        Chart.defaults.plugins.legend.onClick(e, legendItem, legend);
+    }
+};
+// -------------------------------------------
+
+
+function newLegendFilterHandler(item, chart){
+    if (item.datasetIndex == 3 | item.datasetIndex == 5 | item.datasetIndex == 6){
+        return false
+    } else {
+        return true
+    }
+}
 
 
 
@@ -230,16 +298,21 @@ function chart_onclick(e){
         const canvasPosition = Chart.helpers.getRelativePosition(e, pureJSChart);
         const new_x = pureJSChart.scales.x.getValueForPixel(canvasPosition.x)
         const new_y = pureJSChart.scales.y.getValueForPixel(canvasPosition.y)
-        datapoints.X.push(new_x)
-        datapoints.Y.push(new_y)
+
+        if (datapoints.X.includes(new_x)){
+            datapoints.Y[datapoints.X.indexOf(new_x)] = new_y
+        } else {
+            datapoints.X.push(new_x)
+            datapoints.Y.push(new_y)
+        }
     }
-    datapoints.update_XY();
-    pureJSChart.data.datasets[0].data = datapoints.XY  // update dataset. bit hacky but works for now
+    pureJSChart.data.datasets[0].data = datapoints.XY  // update dataset
     console.log(`Number of Datapoints: ${datapoints.XY.length}`)
     pureJSChart.update(mode="none");  // disables shuffling of points when the array is rearranged
-    gp.train_gp(datapoints.X, datapoints.Y);
-    pureJSChart.data.datasets[1].data = gp.dataset_sigma_high
-    pureJSChart.data.datasets[2].data = gp.dataset_prediction
+    gp.predict(datapoints.X, datapoints.Y, xaxis);
+    pureJSChart.data.datasets[1].data = gp.dataset_prediction
+    pureJSChart.data.datasets[2].data = gp.dataset_sigma_high
     pureJSChart.data.datasets[3].data = gp.dataset_sigma_low
+    // prior and prior variance doesnt need to be added since they dont change on any onclick event
     pureJSChart.update();
 }

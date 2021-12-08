@@ -8,69 +8,109 @@ chartjs = window.Chart
 mathjs = window.math
 
 
-# self._length_scale = 0.8
-# self._sigma_pred_squared = 9
-# self._sigma_self_squared = 1
+# # --------------------------------------------- gaussianprocessregression.py ----------------------------------------------------------------
+
+# from browser import window  # type: ignore
+# import math
+
+# # import mathjs module
+# mathjs = window.math
+
 
 class GaussianProcessRegressionPy:
-    def __init__(self, length_scale=1, prediction_variance=1, self_variance=0):
+    def __init__(self, length_scale=1, prior_variance=1, data_noise=0):
         self._length_scale = length_scale
-        self._sigma_pred_squared = prediction_variance
-        self._sigma_self_squared = self_variance
 
-        self.data_X = None
-        self.data_Y = None
+        self._sigma_prior_squared = prior_variance
+        self._sigma_noise_squared = data_noise
+
+        self._data_X = None
+        self._data_Y = None
+        self._prior_mean = None
+        self._prior_mean_function = None
 
         self.prediction = []
 
     @property
     def _sigma_squared(self):    
-        return self._sigma_pred_squared - self._sigma_self_squared
+        return self._sigma_prior_squared - self._sigma_noise_squared
 
-    def _k_RBF(self, xi,xj):
-        return(self._sigma_squared * math.exp(-(xi-xj)**2/(2 * self._length_scale**2)))
+    def set_prior_mean(self, func, axis):
+        self._prior_mean = [func(x) for x in axis]
+        self._prior_mean_function = func
 
-    def _calc_Sigma(self, x_t):
-        X_new = self.data_X + [x_t]
+    @property
+    def prior(self):
+        return [self._prior_mean, [self._sigma_prior_squared for _ in range(len(self._prior_mean))]]
+
+    @property
+    def data_Y_prior(self):
+        return [self.data_Y[i] - self._prior_mean_function(self.data_X[i]) for i in range(len(self.data_X))]
+
+    def _k_RBF(self, xi, xj):
+        noise = (self._sigma_noise_squared if xi == xj else 0)
+        return self._sigma_squared * math.exp(-(xi-xj)**2/(2 * self._length_scale**2)) + noise
+
+    def _calc_Sigma(self, X_t):
+        X_new = self.data_X + X_t
         return [[self._k_RBF(xi,xj) for xj in X_new] for xi in X_new]
 
-
-    def _calc_gp(self, Sigma):
+    def _calc_gp(self, covariance_matrix):  # covariance_matrix is a n+m x n+m matrix
+        # data_X and data_Y are n vectors
         if self.data_X:
-            # sigma is n+1 x n+1, Y is n vector
-            K = mathjs.transpose(mathjs.transpose(Sigma[:-1])[:-1])  # nxn matrix
+            n = len(self.data_X)
 
-            Kstar = Sigma[-1][:-1]  # n vector
-            Kstarstar = Sigma[-1][-1]  # scalar
+            K = [row[:n] for row in covariance_matrix[:n]]  # nxn matrix
+            Kstar = [row[n:] for row in covariance_matrix[:n]]  # nxm matrix
+            KstarT = [row[:n] for row in covariance_matrix[n:]]  # mxn matrix
+            Kstarstar = [row[n:] for row in covariance_matrix[n:]]  # mxm matrix
 
-            KstarT = list(Kstar)  # n vector copy
             Kinv = mathjs.inv(K)  # nxn matrix --> need javascript mathjs library for inversion
 
-            mu_t = mathjs.multiply(mathjs.multiply(KstarT,Kinv),self.data_Y)
-            variance_t = Kstarstar - mathjs.multiply(mathjs.multiply(KstarT,Kinv),Kstar) + self._sigma_self_squared
+            KstarTKinvY = mathjs.multiply(mathjs.multiply(KstarT,Kinv),self.data_Y_prior)
+            KstarTKinvKstar = mathjs.multiply(mathjs.multiply(KstarT,Kinv),Kstar)
+
+            mu_t = [KstarTKinvY[i] + self._prior_mean[i] for i in range(len(self._prior_mean))]
+            variance_t = [Kstarstar[i][i] - KstarTKinvKstar[i][i] for i in range(len(Kstarstar))]
         else:
-            mu_t = 0
-            variance_t = Sigma[0][0] + self._sigma_self_squared
+            mu_t = list(self._prior_mean)
+            variance_t = [covariance_matrix[i][i] for i in range(len(covariance_matrix))]
+
         return [mu_t, variance_t]
+
 
     def set_data(self, X, Y):
         self.data_X = X
         self.data_Y = Y
 
     def predict(self, x_axis):
-        self.prediction = [self._calc_gp(self._calc_Sigma(x_pred)) for x_pred in x_axis]
+        if self._prior_mean is None:
+            self.set_prior_mean(lambda _: 0, x_axis)
+        self.prediction = self._calc_gp(self._calc_Sigma(x_axis))
 
 
+
+# # --------------------------------------------- brythonchart.py ----------------------------------------------------------------
+
+# from browser import document, window  # type: ignore
+
+# # import chartjs module
+# chartjs = window.Chart
 
 
 # chartjs 
 class BrythonChartJS:
     def __init__(self, div_id):
 
-        self._datapoints = []  # input: [[x1, x2, x3, ..., xn], [y1, y2, y3, ..., yn]] --> [{"x": x1, "y": y1, "r": 10}, ..., {"x": xn, "y": yn, "r": 10}]
-        self._prediction = []  # input: [[x1, x2, x3, ..., xk], [[mu1, var1], [mu2, var2], ..., [muk, vark]]] --> [{"x": x1, "y": y1}, ..., {"x": xn, "y": yn}]
+        self._datapoints = []
+
+        self._prediction = []
         self._prediction_add_variance = []
         self._prediction_sub_variance = []
+
+        self._prior = []
+        self._prior_add_variance = []
+        self._prior_sub_variance = []
 
         self._chart = chartjs.new(document[div_id].getContext('2d'),{
             "data": {
@@ -81,28 +121,56 @@ class BrythonChartJS:
                     "backgroundColor": 'rgb(99, 255, 132)'
                 },{
                     "type": 'line',
-                    "label": 'GP Upper Variance',
-                    "fill": '+1',
-                    "data": self._prediction_add_variance,
-                    "backgroundColor": 'rgba(132, 99, 255, 0.2)',
-                    "pointRadius": 0,
-                    "pointHitRadius": 5
-                },{
-                    "type": 'line',
                     "label": 'GP Prediction',
                     "data": self._prediction,
                     "backgroundColor": 'rgba(132, 99, 255, 1)'
                 },{
                     "type": 'line',
-                    "label": 'GP Lower Variance',
+                    "label": 'GP Variance',
+                    "fill": '+1',
+                    "data": self._prediction_add_variance,
+                    "backgroundColor": 'rgba(132, 99, 255, 0.2)',
+                    "pointRadius": 0,
+                    "pointHitRadius": 5
+
+                },{
+                    "type": 'line',
+                    "label": 'GP Variance',
                     "fill": "-1",
                     "data": self._prediction_sub_variance,
                     "backgroundColor": 'rgba(132, 99, 255, 0.2)',
                     "pointRadius": 0,
                     "pointHitRadius": 5
+                },{
+                    "type": 'line',
+                    "label": 'Prior',
+                    "data": self._prior,
+                    "backgroundColor": 'rgba(32, 99, 255, 0.3)'
+                },{
+                    "type": 'line',
+                    "label": 'Prior Variance',
+                    "fill": '+1',
+                    "data": self._prior_add_variance,
+                    "backgroundColor": 'rgba(32, 99, 255, 0.1)',
+                    "pointRadius": 0,
+                    "pointHitRadius": 5
+                },{
+                    "type": 'line',
+                    "label": 'Prior Variance',
+                    "fill": "-1",
+                    "data": self._prior_sub_variance,
+                    "backgroundColor": 'rgba(32, 99, 255, 0.1)',
+                    "pointRadius": 0,
+                    "pointHitRadius": 5
                 }]
             },
             "options": {
+                "plugins": {
+                    "legend": {
+                        "labels": {"filter": lambda item, chart: self.legendFilter(item, chart)},
+                        "onClick": lambda  e, item, *args: self.click_legend(e, item, *args)
+                    },
+                },
                 "scales": {
                     "y": {
                         "suggestedMax": 50,
@@ -115,7 +183,8 @@ class BrythonChartJS:
                 },
                 "responsive": True,
                 "onClick": lambda e, *args: self.click_chart(e, *args)
-            }
+            },
+
         })
 
         self.pre_update_hook = None
@@ -124,9 +193,13 @@ class BrythonChartJS:
     def datapoints(self):
         return self._datapoints
 
-    # setter method automatically transforms into chart version (and updates gp prediction?)
     @datapoints.setter
     def datapoints(self, val):
+        """setter method automatically transforms data into chart version
+        
+        input: val = [[x1, x2, x3, ..., xn], [y1, y2, y3, ..., yn]]
+        output: self._datapoints = [{"x": x1, "y": y1, "r": 10}, ..., {"x": xn, "y": yn, "r": 10}]
+        """
         inputT = [[val[j][i] for j in range(len(val))] for i in range(len(val[0]))]
         self._datapoints = [{"x": el[0], "y": el[1], "r": 10} for el in inputT]
 
@@ -136,13 +209,40 @@ class BrythonChartJS:
 
     @prediction.setter
     def prediction(self, val):
-        x, mu_var = val
-        mu, var = [[mu_var[j][i] for j in range(len(mu_var))] for i in range(len(mu_var[0]))]
-        x_mu_var_T = list(zip(x, mu, var))
+        """setter method automatically transforms data into chart version; adds variances
+        
+        input: val = [[x1, x2, ..., xk], [mu1, mu2, ..., muk], [var1, var2, ..., vark]]]
+        outputs: 
+            self._prediction = [{"x": x1, "y": y1}, {"x": x2, "y": y2}, ..., {"x": xn, "y": yn}]
+            self._prediction_add_variance = [{"x": x1, "y": y1 + var}, {"x": x2, "y": y2 + var}, ..., {"x": xn, "y": yn + var}]
+            self._prediction_sub_variance = [{"x": x1, "y": y1 - var}, {"x": x2, "y": y2 - var}, ..., {"x": xn, "y": yn - var}]
+        """
 
-        self._prediction = [{"x": el[0], "y": el[1]} for el in x_mu_var_T]
-        self._prediction_add_variance = [{"x": el[0], "y": el[1] + el[2]} for el in x_mu_var_T]
-        self._prediction_sub_variance = [{"x": el[0], "y": el[1] - el[2]} for el in x_mu_var_T]
+        x_mu_var = list(zip(*val))
+
+        self._prediction = [{"x": el[0], "y": el[1]} for el in x_mu_var]
+        self._prediction_add_variance = [{"x": el[0], "y": el[1] + el[2]} for el in x_mu_var]
+        self._prediction_sub_variance = [{"x": el[0], "y": el[1] - el[2]} for el in x_mu_var]
+
+    @property
+    def prior(self):
+        return self._prior
+
+    @prior.setter
+    def prior(self, val):
+        """setter method automatically transforms data into chart version; adds variances
+        
+        input: val = [[x1, x2, ..., xk], [mu1, mu2, ..., muk], [var1, var2, ..., vark]]]
+        outputs: 
+            self._prior = [{"x": x1, "y": y1}, {"x": x2, "y": y2}, ..., {"x": xn, "y": yn}]
+            self._prior_add_variance = [{"x": x1, "y": y1 + var}, {"x": x2, "y": y2 + var}, ..., {"x": xn, "y": yn + var}]
+            self._prior_sub_variance = [{"x": x1, "y": y1 - var}, {"x": x2, "y": y2 - var}, ..., {"x": xn, "y": yn - var}]
+        """
+        x_mu_var = list(zip(*val))
+
+        self._prior = [{"x": el[0], "y": el[1]} for el in x_mu_var]
+        self._prior_add_variance = [{"x": el[0], "y": el[1] + el[2]} for el in x_mu_var]
+        self._prior_sub_variance = [{"x": el[0], "y": el[1] - el[2]} for el in x_mu_var]
 
     # used to train the gp when points have been removed or added interactively
     @property
@@ -153,37 +253,96 @@ class BrythonChartJS:
         self._datapoints += [{"x": data[0], "y": data[1], "r": 10}]
 
     def update_chart(self):
-        for ds in self._chart["data"]["datasets"]:
-            if ds["label"] == "Dataset":
+        datasets = self._chart["data"]["datasets"]
+        for ds in datasets:
+            if datasets.index(ds) == 0:
                 ds["data"] = self._datapoints
                 self._chart.update("none")
-            elif ds["label"] == "GP Upper Variance":
-                ds["data"] = self._prediction_add_variance
-            elif ds["label"] == "GP Prediction":
+            elif datasets.index(ds) == 1:
                 ds["data"] = self._prediction
-            elif ds["label"] == "GP Lower Variance":
+            elif datasets.index(ds) == 2:
+                ds["data"] = self._prediction_add_variance
+            elif datasets.index(ds) == 3:
                 ds["data"] = self._prediction_sub_variance
+            elif datasets.index(ds) == 4:
+                ds["data"] = self._prior
+            elif datasets.index(ds) == 5:
+                ds["data"] = self._prior_add_variance
+            elif datasets.index(ds) == 6:
+                ds["data"] = self._prior_sub_variance
 
             self._chart.update()
 
+
     # args catches whatever else is handed over
     def click_chart(self, event, *args):
+
+        # if clicked at chart element, remove if its a datapoint
         element = self._chart.getElementsAtEventForMode(event, 'point', self._chart["options"])
         if len(element) > 0:
             for el in element:
                 if el.datasetIndex == 0:
                     self._datapoints.pop(el.index)
 
-
+        # else prepare to add a new datapoint
         else:
             canvasPosition = chartjs.helpers.getRelativePosition(event, self._chart)
-            new_xy = [self._chart.scales.x.getValueForPixel(canvasPosition.x), self._chart.scales.y.getValueForPixel(canvasPosition.y)]
-            self.add_datapoint(new_xy)
+            new_x = self._chart.scales.x.getValueForPixel(canvasPosition.x)
+            new_y = self._chart.scales.y.getValueForPixel(canvasPosition.y)
 
+            # check if datapoint with that x exists, if yes, change its y coordinate, if not, add datapoint
+            existing_x = [el["x"] for el in self._datapoints]
+            if new_x in existing_x:
+                self._datapoints[existing_x.index(new_x)]["y"] = new_y
+            else:
+                self.add_datapoint([new_x, new_y])
+
+        # do any other custom calculations (recalculate gp)
         if self.pre_update_hook is not None:
             self.pre_update_hook()
+
+        # and update the chart
         self.update_chart()
 
+
+    def click_legend(self, event, legendItem, legend):
+        index = legendItem.datasetIndex
+        # Prediction Variance
+        if (index == 2 or index == 3):
+            ci = legend.chart
+            for meta in [ci.getDatasetMeta(2), ci.getDatasetMeta(3)]:
+                if meta.hidden:
+                    ci.show(index)
+                    meta.hidden = False
+                else:
+                    ci.hide(index)
+                    meta.hidden = True
+
+            ci.update()
+        # Prior
+        elif (index == 4 or index == 5 or index == 6):
+            ci = legend.chart
+            for meta in [ci.getDatasetMeta(4), ci.getDatasetMeta(5), ci.getDatasetMeta(6)]:
+                if meta.hidden:
+                    meta.hidden = False
+                else:
+                    meta.hidden = True
+
+            ci.update()
+        else:
+            # Do the original logic
+            chartjs.defaults.plugins.legend.onClick(event, legendItem, legend)
+
+
+    def legendFilter(self, item, chart):
+        return False if ((item.datasetIndex == 3) or (item.datasetIndex == 5) or (item.datasetIndex == 6)) else True
+
+
+# # --------------------------------------------- brython_gp.py ----------------------------------------------------------------
+
+# import random
+# from brython_GP.gaussianprocessregression import GaussianProcessRegressionPy
+# from brython_GP.brythonchart import BrythonChartJS
 
 
 class RandomDataPointsPy:
@@ -199,8 +358,8 @@ class RandomDataPointsPy:
     def XY(self):
         return [{"x": xy[0], "y": xy[1], "r": 10} for xy in zip(self.X, self.Y)]
 
-datapoints = RandomDataPointsPy()
 
+datapoints = RandomDataPointsPy()
 
 # x axis for prediction
 def generate_x_axis(start, end, steps):
@@ -213,22 +372,24 @@ xaxis = generate_x_axis(axis_start, axis_end, 100)
 
 
 # gaussian process regression
-gp = GaussianProcessRegressionPy(length_scale=0.8, prediction_variance=9, self_variance=1)
+gp = GaussianProcessRegressionPy(length_scale=0.8, prior_variance=9, data_noise=0)
 gp.set_data(datapoints.X, datapoints.Y)
+# gp.set_prior_mean(lambda x: 10+10*math.sin(x),xaxis)  # not specifying a prior defaults to constant 0
 gp.predict(xaxis)  # stores in gp.prediction
 
 
 # chart
 brythonChart = BrythonChartJS("brythonChart")
 brythonChart.datapoints = [datapoints.X, datapoints.Y]
-brythonChart.prediction = [xaxis, gp.prediction]
+brythonChart.prediction = [xaxis, gp.prediction[0], gp.prediction[1]]
+brythonChart.prior = [xaxis, gp.prior[0], gp.prior[1]]
 
 # super hacky but no idea how to do that better atm without polluting the chart class with gp class methods
 def pre_update_hook():
     gp.set_data(*brythonChart.datapoints_inputform)
     print(f"Number of Datapoints: {len(brythonChart.datapoints_inputform[0])}")
     gp.predict(xaxis)
-    brythonChart.prediction = [xaxis, gp.prediction]
+    brythonChart.prediction = [xaxis, gp.prediction[0], gp.prediction[1]]
 brythonChart.pre_update_hook = pre_update_hook
 
 brythonChart.update_chart()
