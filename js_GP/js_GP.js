@@ -162,7 +162,13 @@ var datapoints = new RandomDataPoints()
 var _buffer = 0.25*(Math.max(...datapoints.X)-Math.min(...datapoints.X))
 var xaxis = generate_x_axis(Math.min(...datapoints.X)-_buffer,Math.max(...datapoints.X)+_buffer,100)
 
-var gp = new GaussianProcessRegression(length_scale=0.8, prior_variance=9, data_noise=0)
+let init_length_scale = math.round(math.random(0.5,2),1)  // let init_length_scale = 0.8
+let init_prior_variance = math.round(math.random(0.5,10),1)  // let init_prior_variance = 9
+
+document.getElementById('gplengthscale').value = init_length_scale
+document.getElementById('gpvariance').value = init_prior_variance
+
+var gp = new GaussianProcessRegression(length_scale=init_length_scale, prior_variance=init_prior_variance, data_noise=0)
 // gp.set_prior_mean((arr) => {return arr.map((el) => {return el*5})}, xaxis)  // set a custom prior through a function
 gp.predict(datapoints.X, datapoints.Y, xaxis)
 
@@ -314,5 +320,26 @@ function chart_onclick(e){
     pureJSChart.data.datasets[2].data = gp.dataset_sigma_high
     pureJSChart.data.datasets[3].data = gp.dataset_sigma_low
     // prior and prior variance doesnt need to be added since they dont change on any onclick event
+    pureJSChart.update();
+}
+
+
+function changeLengthscaleVariance(){
+    gp._length_scale = document.getElementById('gplengthscale').value
+    gp._sigma_prior_squared = document.getElementById('gpvariance').value
+    console.log(`Length Scale: ${gp._length_scale}`)
+    console.log(`Output Variance: ${gp._sigma_prior_squared}`)
+
+    // pureJSChart.data.datasets[0].data = datapoints.XY  // update dataset
+    console.log(`Number of Datapoints: ${datapoints.XY.length}`)
+    pureJSChart.update(mode="none");  // disables shuffling of points when the array is rearranged
+    gp.predict(datapoints.X, datapoints.Y, xaxis);
+    pureJSChart.data.datasets[1].data = gp.dataset_prediction
+    pureJSChart.data.datasets[2].data = gp.dataset_sigma_high
+    pureJSChart.data.datasets[3].data = gp.dataset_sigma_low
+
+    pureJSChart.data.datasets[5].data = gp._prior_add_variance
+    pureJSChart.data.datasets[6].data = gp._prior_sub_variance
+
     pureJSChart.update();
 }

@@ -89,13 +89,29 @@
                 <canvas class="my-4 w-100" id="pureJSChart" width="900" height="380"></canvas>
           
                 <p>
-                  <button class="btn btn-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#purejsgpcontrols" aria-expanded="false" aria-controls="purejsgpcontrols">
+                  <button class="btn btn-secondary" type="button" data-bs-toggle="collapse" data-bs-target="#purejsgpcontrols" aria-expanded="true" aria-controls="purejsgpcontrols">
                     GP Controls
                   </button>
                 </p>
-                <div class="collapse" id="purejsgpcontrols">
+                <div class="collapse show" id="purejsgpcontrols">
                   <div class="card card-body">
-                    Placeholder for GP controls
+                    <div class="row">
+                      <div class="col-2">
+                        <div class="input-group mb-3">
+                          <span class="input-group-text" id="enter-lengthscale">Lengthscale</span>
+                          <input id="gplengthscale" type="number" step="0.1" min="0.1" class="form-control" placeholder="1" aria-label="1" value="1" aria-describedby="enter-lengthscale" onchange="changeLengthscaleVariance()">
+                        </div>
+                      </div>
+                      <div class="col-2">
+                        <div class="input-group mb-3">
+                          <span class="input-group-text" id="enter-variance">Variance</span>
+                          <input id="gpvariance" type="number" step="0.1" min="0.1" class="form-control" placeholder="1" aria-label="1" value="1" aria-describedby="enter-variance" onchange="changeLengthscaleVariance()">
+                        </div>
+                      </div>
+                      <!-- <div class="col-auto">
+                        <button type="button" class="btn btn-primary mb-3" onclick="changeLengthscaleVariance()">Apply</button>
+                      </div> -->
+                    </div>
                   </div>
                 </div>
 
